@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Gestor de Tareas — Obras</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f0f2f5;color:#111;font-size:14px}
+#app{max-width:960px;margin:0 auto;padding:1.5rem 1rem 5rem}
+h1{font-size:22px;font-weight:500}
+input,select,textarea,button{font-family:inherit;font-size:13px}
+input,select,textarea{padding:7px 10px;border-radius:6px;border:1px solid #ccc;background:#fff;color:#111;width:100%;outline:none}
+input:focus,select:focus,textarea:focus{border-color:#185FA5;box-shadow:0 0 0 2px rgba(24,95,165,.15)}
+textarea{resize:vertical;min-height:70px}
+button{cursor:pointer;font-weight:500;border-radius:6px;padding:7px 14px;border:none;white-space:nowrap}
+.card{background:#fff;border-radius:10px;border:1px solid #ddd;padding:14px 18px}
+.badge{display:inline-block;font-size:11px;padding:2px 9px;border-radius:20px;white-space:nowrap}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.stat{border-radius:8px;padding:10px 12px}
+.stat .lbl{font-size:11px;margin-bottom:2px}
+.stat .val{font-size:22px;font-weight:500}
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:999}
+.modal{background:#fff;border-radius:12px;padding:1.5rem;min-width:300px;max-width:90vw;border:1px solid #ddd;box-shadow:0 4px 20px rgba(0,0,0,.15)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;font-weight:500;padding:6px 10px;border-bottom:1px solid #eee;color:#555;background:#f8f8f8}
+td{padding:7px 10px;border-bottom:1px solid #f0f0f0}
+tr:last-child td{border-bottom:none}
+.bar-wrap{background:#eee;border-radius:4px;height:8px;flex:1}
+.bar{height:8px;border-radius:4px;background:#185FA5}
+.sync{font-size:12px;padding:4px 10px;border-radius:6px;display:inline-flex;align-items:center;gap:5px}
+.sync.ok{background:#EAF3DE;color:#3B6D11}
+.sync.err{background:#FCEBEB;color:#A32D2D}
+.sync.loading{background:#FAEEDA;color:#BA7517}
+</style>
+</head>
+<body>
+<div id="app"><div style="padding:3rem;text-align:center;color:#888">Cargando datos...</div></div>
+<script>
+// ══════════════════════════════════════════════════════════
+//  CONFIGURACIÓN — pegá aquí tu URL del Apps Script
+// ══════════════════════════════════════════════════════════
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxJTTPvRHh_jYO4Ba597wmE_QsYpPrPtWH6uiqpsMvjtGONnXUo6DP1sjg3f0cHQZY/exec";
+// ══════════════════════════════════════════════════════════
+
+const DEFAULT_RUBROS=["Hormigón","Mampostería","Eléctrica","Sanitaria","Combate","Climatización","Ventilación"];
+const PRIORIDADES=["Alta","Media","Baja"];
+const ESTADOS=["Pendiente","En progreso","Completada"];
+const TIPOS=["Obra","Gabinete"];
+const PRIO_COLOR={Alta:"#E24B4A",Media:"#EF9F27",Baja:"#639922"};
+const ESTADO_BG={"Pendiente":"#F1EFE8","En progreso":"#E6F1FB","Completada":"#EAF3DE"};
+const ESTADO_TC={"Pendiente":"#5F5E5A","En progreso":"#185FA5","Completada":"#3B6D11"};
+
+let state={
+  tareas:[],rubros:DEFAULT_RUBROS,obras:[],
+  vista:"tareas",showForm:false,editId:null,
+  form:emptyForm(),
+  filtros:{estado:"",rubro:"",nivel:"",tipo:"",prioridad:"",obraId:""},
+  showRubroInput:false,nuevoRubro:"",
+  showObraInput:false,nuevaObra:"",
+  tiempoModal:null,tiempoInput:"",
+  cmpRubro:"",cmpObra:"",cmpPers:"",
+  syncStatus:"loading", // "loading" | "ok" | "error" | "saving"
+  toast:""
+};
+
+function emptyForm(){return{titulo:"",descripcion:"",rubro:"",nivel:"",tipo:"Obra",prioridad:"Media",responsable:"",fechaLimite:"",tiempoEstimado:"",obraId:""}}
+
+// ─── sync con Google Sheets ───────────────────────────────
+async function loadData(){
+  state.syncStatus="loading";render();
+  try{
+    const res=await fetch(SCRIPT_URL+"?callback=cb",{method:"GET",mode:"no-cors",redirect:"follow"});
+    // no-cors no permite leer la respuesta, usamos jsonp
+    await loadViaJsonp();
+  } catch(e){ await loadViaJsonp(); }
+}
+
+function loadViaJsonp(){
+  return new Promise((resolve)=>{
+    const existing=document.getElementById("jsonp-script");
+    if(existing)existing.remove();
+    window._jsonpCallback=function(data){
+      if(data&&data.ok){
+        state.tareas=data.data.tareas||[];
+        state.rubros=data.data.rubros||DEFAULT_RUBROS;
+        state.obras=data.data.obras||[];
+        state.syncStatus="ok";
+      } else { state.syncStatus="error"; }
+      render();resolve();
+    };
+    const s=document.createElement("script");
+    s.id="jsonp-script";
+    s.src=SCRIPT_URL+"?callback=_jsonpCallback";
+    s.onerror=()=>{ state.syncStatus="error";render();resolve(); };
+    document.head.appendChild(s);
+  });
+}
+
+async function saveData(){
+  state.syncStatus="saving";render();
+  try{
+    const body=JSON.stringify({tareas:state.tareas,rubros:state.rubros,obras:state.obras});
+    await fetch(SCRIPT_URL,{method:"POST",mode:"no-cors",body,redirect:"follow"});
+    // con no-cors no podemos leer la respuesta, asumimos ok
+    state.syncStatus="ok";
+  } catch(e){ state.syncStatus="error"; }
+  render();
+}
+
+// ─── helpers ─────────────────────────────────────────────
+const obraName=id=>state.obras.find(o=>o.id===id)?.nombre||"";
+const niveles=()=>[...new Set(state.tareas.map(t=>t.nivel).filter(Boolean))].sort();
+const responsables=()=>[...new Set(state.tareas.map(t=>t.responsable).filter(Boolean))].sort();
+function esc(s){return String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
+function badge(t,bg,tc){return`<span class="badge" style="background:${bg};color:${tc}">${esc(t)}</span>`}
+function btn(label,onclick,bg="#185FA5",tc="#fff",bdr="none"){return`<button onclick="${onclick}" style="background:${bg};color:${tc};border:${bdr}">${label}</button>`}
+function fset(k,v){state.form[k]=v;render()}
+function sset(k,v){state.form[k]=v;render()}
+function filtrar(k,v){state.filtros[k]=v;render()}
+function limpiarFiltros(){state.filtros={estado:"",rubro:"",nivel:"",tipo:"",prioridad:"",obraId:""};render()}
+
+let toastT;
+function toast(msg){state.toast=msg;render();clearTimeout(toastT);toastT=setTimeout(()=>{state.toast="";render()},2500)}
+
+// ─── acciones ────────────────────────────────────────────
+async function submitForm(){
+  if(!state.form.titulo.trim()){alert("El título es obligatorio");return}
+  if(state.editId){
+    state.tareas=state.tareas.map(t=>t.id===state.editId?{...t,...state.form}:t);
+  } else {
+    state.tareas=[...state.tareas,{...state.form,id:Date.now(),fechaCreacion:new Date().toISOString(),tiemposEjecucion:[]}];
+  }
+  state.showForm=false;state.editId=null;state.form=emptyForm();
+  await saveData();toast("Tarea guardada")
+}
+
+async function cambiarEstado(id,estado){
+  if(estado==="Completada"){state.tiempoModal=id;state.tiempoInput="";render();return}
+  state.tareas=state.tareas.map(t=>t.id===id?{...t,estado}:t);
+  await saveData()
+}
+
+async function confirmarTiempo(){
+  const hrs=parseFloat(state.tiempoInput);
+  state.tareas=state.tareas.map(t=>t.id===state.tiempoModal?{
+    ...t,estado:"Completada",fechaCompletada:new Date().toISOString(),
+    tiemposEjecucion:[...(t.tiemposEjecucion||[]),{horas:isNaN(hrs)?null:hrs,fecha:new Date().toISOString()}]
+  }:t);
+  state.tiempoModal=null;
+  await saveData();toast("Tarea completada")
+}
+
+async function eliminarTarea(id){
+  if(!confirm("¿Eliminar esta tarea?"))return;
+  state.tareas=state.tareas.filter(t=>t.id!==id);
+  await saveData();toast("Tarea eliminada")
+}
+
+function editarTarea(id){
+  const t=state.tareas.find(t=>t.id===id);
+  state.editId=id;state.showForm=true;
+  state.form={titulo:t.titulo,descripcion:t.descripcion,rubro:t.rubro,nivel:t.nivel,tipo:t.tipo,prioridad:t.prioridad,responsable:t.responsable,fechaLimite:t.fechaLimite,tiempoEstimado:t.tiempoEstimado||"",obraId:t.obraId||""};
+  render();window.scrollTo(0,0)
+}
+
+async function agregarRubro(){
+  const r=state.nuevoRubro.trim();
+  if(!r)return;
+  if(state.rubros.includes(r)){alert("Ese rubro ya existe");return}
+  state.rubros=[...state.rubros,r];state.nuevoRubro="";state.showRubroInput=false;
+  await saveData();toast("Rubro agregado")
+}
+
+async function eliminarRubro(r){
+  if(state.tareas.some(t=>t.rubro===r)){alert("No se puede eliminar un rubro con tareas asignadas.");return}
+  if(!confirm(`¿Eliminar rubro "${r}"?`))return;
+  state.rubros=state.rubros.filter(x=>x!==r);
+  await saveData();toast("Rubro eliminado")
+}
+
+async function agregarObra(){
+  const nombre=state.nuevaObra.trim();
+  if(!nombre)return;
+  state.obras=[...state.obras,{id:Date.now().toString(),nombre}];
+  state.nuevaObra="";state.showObraInput=false;
+  await saveData();toast("Obra agregada")
+}
+
+async function eliminarObra(id){
+  if(!confirm("¿Eliminar esta obra?"))return;
+  state.obras=state.obras.filter(o=>o.id!==id);
+  await saveData();toast("Obra eliminada")
+}
+
+function exportarJSON(){
+  const data={tareas:state.tareas,rubros:state.rubros,obras:state.obras,exportado:new Date().toISOString()};
+  const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
+  const a=document.createElement("a");a.href=URL.createObjectURL(blob);
+  a.download=`gestor-obras-backup-${new Date().toISOString().slice(0,10)}.json`;a.click();
+  toast("Archivo exportado")
+}
+
+function importarJSON(){
+  const inp=document.createElement("input");inp.type="file";inp.accept=".json";
+  inp.onchange=async e=>{
+    const file=e.target.files[0];if(!file)return;
+    const reader=new FileReader();
+    reader.onload=async ev=>{
+      try{
+        const data=JSON.parse(ev.target.result);
+        if(!data.tareas||!data.rubros||!data.obras){alert("Archivo inválido");return}
+        if(!confirm(`¿Importar ${data.tareas.length} tareas, ${data.obras.length} obras y ${data.rubros.length} rubros?\nEsto REEMPLAZA los datos actuales.`))return;
+        state.tareas=data.tareas;state.rubros=data.rubros;state.obras=data.obras;
+        await saveData();toast("Datos importados")
+      }catch{alert("Error al leer el archivo")}
+    };reader.readAsText(file)
+  };inp.click()
+}
+
+// ─── stats helpers ────────────────────────────────────────
+function statsGroup(tareas,keyFn,labelFn){
+  const g={};
+  tareas.forEach(t=>{
+    (t.tiemposEjecucion||[]).filter(te=>te.horas!=null).forEach(te=>{
+      const k=keyFn(t);if(!k)return;
+      if(!g[k])g[k]={label:labelFn(t),horas:[],count:0};
+      g[k].horas.push(te.horas);g[k].count++;
+    })
+  });
+  return Object.values(g).map(g=>{
+    const sum=g.horas.reduce((a,b)=>a+b,0);
+    return{...g,total:sum,prom:sum/g.horas.length,min:Math.min(...g.horas),max:Math.max(...g.horas)}
+  }).sort((a,b)=>b.total-a.total)
+}
+
+// ─── render sections ─────────────────────────────────────
+function syncBadge(){
+  const map={loading:["Cargando...","loading"],saving:["Guardando...","loading"],ok:["Sincronizado ✓","ok"],error:["Error de conexión ✗","err"]};
+  const [label,cls]=map[state.syncStatus]||["",""];
+  return`<span class="sync ${cls}">${label}</span>`;
+}
+
+function renderForm(){
+  const f=state.form;
+  const selOpts=(arr,k,label)=>`<label style="font-size:12px;color:#666;display:block;margin-bottom:4px">${label}</label><select onchange="sset('${k}',this.value)">${arr.map(o=>`<option value="${esc(o)}"${f[k]===o?" selected":""}>${esc(o)}</option>`).join("")}</select>`;
+  const selObra=`<label style="font-size:12px;color:#666;display:block;margin-bottom:4px">Obra</label><select onchange="sset('obraId',this.value)"><option value="">Sin asignar</option>${state.obras.map(o=>`<option value="${esc(o.id)}"${f.obraId===o.id?" selected":""}>${esc(o.nombre)}</option>`).join("")}</select>`;
+  return`<div class="card" style="margin-bottom:16px;border-color:#185FA5">
+    <div style="font-size:15px;font-weight:500;margin-bottom:12px">${state.editId?"Editar tarea":"Nueva tarea"}</div>
+    <div class="grid2">
+      <div style="grid-column:1/-1"><label style="font-size:12px;color:#666;display:block;margin-bottom:4px">Título *</label><input value="${esc(f.titulo)}" placeholder="Ej: Encofrado losa nivel 3" oninput="fset('titulo',this.value)"></div>
+      <div style="grid-column:1/-1"><label style="font-size:12px;color:#666;display:block;margin-bottom:4px">Descripción</label><textarea oninput="fset('descripcion',this.value)" placeholder="Detalles...">${esc(f.descripcion)}</textarea></div>
+      <div>${selObra}</div>
+      <div><label style="font-size:12px;color:#666;display:block;margin-bottom:4px">Rubro</label><select onchange="sset('rubro',this.value)"><option value="">Seleccionar...</option>${state.rubros.map(r=>`<option value="${esc(r)}"${f.rubro===r?" selected":""}>${esc(r)}</option>`).join("")}</select></div>
+      <div>${selOpts(TIPOS,"tipo","Tipo")}</div>
+      <div>${selOpts(PRIORIDADES,"prioridad","Prioridad")}</div>
+      <div><label style="font-size:12px;color:#666;display:block;margin-bottom:4px">Nivel / Piso</label><input value="${esc(f.nivel)}" placeholder="Ej: PB, Piso 2..." oninput="fset('nivel',this.value)"></div>
+      <div><label style="font-size:12px;color:#666;display:block;margin-bottom:4px">Responsable</label><input value="${esc(f.responsable)}" placeholder="Nombre" oninput="fset('responsable',this.value)"></div>
+      <div><label style="font-size:12px;color:#666;display:block;margin-bottom:4px">Fecha límite</label><input type="date" value="${esc(f.fechaLimite)}" oninput="fset('fechaLimite',this.value)"></div>
+      <div><label style="font-size:12px;color:#666;display:block;margin-bottom:4px">Tiempo estimado (horas)</label><input type="number" value="${esc(f.tiempoEstimado)}" placeholder="Ej: 8" min="0" oninput="fset('tiempoEstimado',this.value)"></div>
+    </div>
+    <div class="row" style="margin-top:14px">
+      ${btn(state.editId?"Guardar cambios":"Crear tarea","submitForm()")}
+      <button onclick="state.showForm=false;state.editId=null;render()" style="background:#e8e8e8;color:#555;border:1px solid #ccc">Cancelar</button>
+    </div>
+  </div>`
+}
+
+function renderTiempoModal(){
+  return`<div class="modal-bg">
+    <div class="modal">
+      <div style="font-size:15px;font-weight:500;margin-bottom:8px">Registrar tiempo de ejecución</div>
+      <div style="color:#666;margin-bottom:12px">¿Cuántas horas tomó completar esta tarea?</div>
+      <input type="number" value="${esc(state.tiempoInput)}" placeholder="Horas reales (ej: 6.5)" min="0" step="0.5" oninput="state.tiempoInput=this.value" style="margin-bottom:12px">
+      <div class="row">
+        ${btn("Completar tarea","confirmarTiempo()","#639922","#fff")}
+        <button onclick="state.tiempoModal=null;render()" style="background:#e8e8e8;color:#555;border:1px solid #ccc">Cancelar</button>
+      </div>
+    </div>
+  </div>`
+}
+
+function renderTareas(){
+  const f=state.filtros;
+  const tf=state.tareas.filter(t=>{
+    if(f.estado&&t.estado!==f.estado)return false;
+    if(f.rubro&&t.rubro!==f.rubro)return false;
+    if(f.nivel&&t.nivel!==f.nivel)return false;
+    if(f.tipo&&t.tipo!==f.tipo)return false;
+    if(f.prioridad&&t.prioridad!==f.prioridad)return false;
+    if(f.obraId&&t.obraId!==f.obraId)return false;
+    return true;
+  });
+  const stats={total:tf.length,pend:tf.filter(t=>t.estado==="Pendiente").length,prog:tf.filter(t=>t.estado==="En progreso").length,comp:tf.filter(t=>t.estado==="Completada").length};
+  const selObra=`<select style="width:auto" onchange="filtrar('obraId',this.value)"><option value="">Obra: todas</option>${state.obras.map(o=>`<option value="${esc(o.id)}"${f.obraId===o.id?" selected":""}>${esc(o.nombre)}</option>`).join("")}</select>`;
+  const selF=(arr,k,label)=>`<select style="width:auto" onchange="filtrar('${k}',this.value)"><option value="">${label}: todos</option>${arr.map(o=>`<option value="${esc(o)}"${f[k]===o?" selected":""}>${esc(o)}</option>`).join("")}</select>`;
+
+  return`
+  <div class="grid4" style="margin-bottom:20px">
+    <div class="stat" style="background:#E6F1FB"><div class="lbl" style="color:#185FA5">Total</div><div class="val" style="color:#185FA5">${stats.total}</div></div>
+    <div class="stat" style="background:#F1EFE8"><div class="lbl" style="color:#5F5E5A">Pendientes</div><div class="val" style="color:#5F5E5A">${stats.pend}</div></div>
+    <div class="stat" style="background:#FAEEDA"><div class="lbl" style="color:#BA7517">En progreso</div><div class="val" style="color:#BA7517">${stats.prog}</div></div>
+    <div class="stat" style="background:#EAF3DE"><div class="lbl" style="color:#3B6D11">Completadas</div><div class="val" style="color:#3B6D11">${stats.comp}</div></div>
+  </div>
+  <div class="row" style="margin-bottom:14px">
+    ${selObra}${selF(ESTADOS,"estado","Estado")}${selF(state.rubros,"rubro","Rubro")}${selF(niveles(),"nivel","Nivel")}${selF(TIPOS,"tipo","Tipo")}${selF(PRIORIDADES,"prioridad","Prioridad")}
+    <button onclick="limpiarFiltros()" style="background:#e8e8e8;color:#555;border:1px solid #ccc;font-size:12px">Limpiar filtros</button>
+  </div>
+  <div class="row" style="margin-bottom:16px">
+    ${btn("+ Nueva tarea","state.showForm=true;state.editId=null;state.form={...emptyForm(),obraId:state.filtros.obraId||''};render()")}
+  </div>
+  ${state.showForm?renderForm():""}
+  ${state.tiempoModal?renderTiempoModal():""}
+  <div style="display:flex;flex-direction:column;gap:10px">
+    ${tf.length===0?`<div class="card" style="text-align:center;color:#888;padding:2rem">No hay tareas con los filtros seleccionados.</div>`:""}
+    ${tf.map(t=>{
+      const tiempos=(t.tiemposEjecucion||[]).filter(te=>te.horas!=null);
+      const estadoSel=`<select style="width:auto;font-size:12px" onchange="cambiarEstado(${t.id},this.value)">${ESTADOS.map(e=>`<option value="${e}"${t.estado===e?" selected":""}>${e}</option>`).join("")}</select>`;
+      return`<div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+          <div style="flex:1">
+            <div class="row" style="margin-bottom:6px;gap:5px">
+              ${badge(t.prioridad,PRIO_COLOR[t.prioridad],"#fff")}
+              ${badge(t.estado,ESTADO_BG[t.estado],ESTADO_TC[t.estado])}
+              ${t.tipo?badge(t.tipo,t.tipo==="Obra"?"#FAEEDA":"#EEEDFE",t.tipo==="Obra"?"#BA7517":"#534AB7"):""}
+              ${t.rubro?badge(t.rubro,"#F1EFE8","#5F5E5A"):""}
+              ${t.nivel?badge(t.nivel,"#E1F5EE","#0F6E56"):""}
+              ${t.obraId?badge(obraName(t.obraId),"#EEEDFE","#3C3489"):""}
+            </div>
+            <div style="font-size:15px;font-weight:500;margin-bottom:4px">${esc(t.titulo)}</div>
+            ${t.descripcion?`<div style="color:#666;margin-bottom:6px">${esc(t.descripcion)}</div>`:""}
+            <div class="row" style="font-size:12px;color:#999;gap:14px">
+              ${t.responsable?`<span>Responsable: ${esc(t.responsable)}</span>`:""}
+              ${t.fechaLimite?`<span>Límite: ${t.fechaLimite}</span>`:""}
+              ${t.tiempoEstimado?`<span>Estimado: ${t.tiempoEstimado}h</span>`:""}
+              ${tiempos.length?`<span style="color:#3B6D11">Real: ${tiempos.map(te=>te.horas+"h").join(", ")}</span>`:""}
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;flex-shrink:0">
+            ${estadoSel}
+            <div class="row" style="gap:5px">
+              <button onclick="editarTarea(${t.id})" style="font-size:12px;padding:4px 10px;background:#f0f0f0;color:#555;border:1px solid #ccc">Editar</button>
+              <button onclick="eliminarTarea(${t.id})" style="font-size:12px;padding:4px 10px;background:#FCEBEB;color:#A32D2D;border:1px solid #F09595">Eliminar</button>
+            </div>
+          </div>
+        </div>
+      </div>`
+    }).join("")}
+  </div>`
+}
+
+function renderObras(){
+  return`<div>
+    <div class="row" style="margin-bottom:14px">${btn("+ Nueva obra","state.showObraInput=!state.showObraInput;render()")}</div>
+    ${state.showObraInput?`<div class="row" style="margin-bottom:14px">
+      <input style="width:260px" value="${esc(state.nuevaObra)}" placeholder="Nombre de la obra" oninput="state.nuevaObra=this.value" onkeydown="if(event.key==='Enter')agregarObra()">
+      ${btn("Agregar","agregarObra()")}
+      <button onclick="state.showObraInput=false;render()" style="background:#e8e8e8;color:#555;border:1px solid #ccc">Cancelar</button>
+    </div>`:""}
+    ${state.obras.length===0?`<div class="card" style="text-align:center;color:#888;padding:2rem">No hay obras registradas.</div>`:""}
+    <div style="display:flex;flex-direction:column;gap:10px">
+      ${state.obras.map(o=>{
+        const tot=state.tareas.filter(t=>t.obraId===o.id).length;
+        const comp=state.tareas.filter(t=>t.obraId===o.id&&t.estado==="Completada").length;
+        const prog=state.tareas.filter(t=>t.obraId===o.id&&t.estado==="En progreso").length;
+        const pend=state.tareas.filter(t=>t.obraId===o.id&&t.estado==="Pendiente").length;
+        return`<div class="card" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+          <div>
+            <div style="font-weight:500;font-size:15px;margin-bottom:6px">${esc(o.nombre)}</div>
+            <div class="row" style="gap:5px">
+              ${badge(pend+" pendientes","#F1EFE8","#5F5E5A")}
+              ${badge(prog+" en progreso","#E6F1FB","#185FA5")}
+              ${badge(comp+" completadas","#EAF3DE","#3B6D11")}
+            </div>
+          </div>
+          <div class="row">
+            <span style="font-size:12px;color:#aaa">${tot} tareas</span>
+            <button onclick="state.filtros.obraId='${o.id}';state.vista='tareas';render()" style="font-size:12px;padding:4px 10px;background:#f0f0f0;color:#555;border:1px solid #ccc">Ver tareas</button>
+            <button onclick="eliminarObra('${o.id}')" style="font-size:12px;padding:4px 10px;background:#FCEBEB;color:#A32D2D;border:1px solid #F09595">Eliminar</button>
+          </div>
+        </div>`
+      }).join("")}
+    </div>
+  </div>`
+}
+
+function renderRubros(){
+  return`<div>
+    <div class="row" style="margin-bottom:14px">${btn("+ Agregar rubro","state.showRubroInput=!state.showRubroInput;render()")}</div>
+    ${state.showRubroInput?`<div class="row" style="margin-bottom:14px">
+      <input style="width:220px" value="${esc(state.nuevoRubro)}" placeholder="Nombre del rubro" oninput="state.nuevoRubro=this.value" onkeydown="if(event.key==='Enter')agregarRubro()">
+      ${btn("Agregar","agregarRubro()")}
+      <button onclick="state.showRubroInput=false;render()" style="background:#e8e8e8;color:#555;border:1px solid #ccc">Cancelar</button>
+    </div>`:""}
+    <div style="display:flex;flex-direction:column;gap:8px">
+      ${state.rubros.map(r=>{
+        const cnt=state.tareas.filter(t=>t.rubro===r).length;
+        return`<div class="card" style="display:flex;justify-content:space-between;align-items:center">
+          <span>${esc(r)}</span>
+          <div class="row">
+            <span style="font-size:12px;color:#aaa">${cnt} tareas</span>
+            <button onclick="eliminarRubro('${esc(r)}')" style="font-size:12px;padding:3px 10px;background:#FCEBEB;color:#A32D2D;border:1px solid #F09595">Eliminar</button>
+          </div>
+        </div>`
+      }).join("")}
+    </div>
+  </div>`
+}
+
+function renderAnalisis(){
+  const completadas=state.tareas.filter(t=>t.estado==="Completada");
+  const selObra=`<select style="width:auto" onchange="state.cmpObra=this.value;render()"><option value="">Todas las obras</option>${state.obras.map(o=>`<option value="${esc(o.id)}"${state.cmpObra===o.id?" selected":""}>${esc(o.nombre)}</option>`).join("")}</select>`;
+  const selRubro=`<select style="width:auto" onchange="state.cmpRubro=this.value;render()"><option value="">Todos los rubros</option>${state.rubros.map(r=>`<option value="${esc(r)}"${state.cmpRubro===r?" selected":""}>${esc(r)}</option>`).join("")}</select>`;
+  const selPers=`<select style="width:auto" onchange="state.cmpPers=this.value;render()"><option value="">Todas las personas</option>${responsables().map(r=>`<option value="${esc(r)}"${state.cmpPers===r?" selected":""}>${esc(r)}</option>`).join("")}</select>`;
+  let base=completadas;
+  if(state.cmpObra)  base=base.filter(t=>t.obraId===state.cmpObra);
+  if(state.cmpRubro) base=base.filter(t=>t.rubro===state.cmpRubro);
+  if(state.cmpPers)  base=base.filter(t=>t.responsable===state.cmpPers);
+
+  function tbl(rows,title){
+    if(!rows.length)return`<p style="color:#888;font-size:13px">Sin datos suficientes.</p>`;
+    const mx=Math.max(...rows.map(r=>r.total));
+    return`<table><thead><tr><th>${title}</th><th>Ejecuciones</th><th>Total (h)</th><th>Promedio (h)</th><th>Mín</th><th>Máx</th><th style="width:120px">Proporción</th></tr></thead><tbody>
+      ${rows.map(r=>{const p=mx>0?Math.round((r.total/mx)*100):0;return`<tr><td style="font-weight:500">${esc(r.label)}</td><td>${r.count}</td><td>${r.total.toFixed(1)}</td><td>${r.prom.toFixed(1)}</td><td>${r.min}</td><td>${r.max}</td><td><div style="display:flex;align-items:center;gap:6px"><div class="bar-wrap"><div class="bar" style="width:${p}%"></div></div><span style="font-size:11px;color:#888">${p}%</span></div></td></tr>`}).join("")}
+    </tbody></table>`
+  }
+
+  const grupos={};
+  base.filter(t=>t.tiemposEjecucion?.some(te=>te.horas!=null)).forEach(t=>{
+    const key=`${t.obraId||""}||${t.rubro}||${t.titulo.toLowerCase().trim()}`;
+    if(!grupos[key])grupos[key]={titulo:t.titulo,rubro:t.rubro,obraId:t.obraId||"",entradas:[]};
+    t.tiemposEjecucion.forEach(te=>{if(te.horas!=null)grupos[key].entradas.push({horas:te.horas,fecha:te.fecha})});
+  });
+  const gruposArr=Object.values(grupos);
+
+  function sec(title,content){return`<div style="margin-bottom:24px"><div style="font-size:15px;font-weight:500;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid #eee">${title}</div>${content}</div>`}
+
+  return`<div>
+    <div class="row" style="margin-bottom:18px">${selObra}${selRubro}${selPers}</div>
+    ${sec("Tiempo por rubro",tbl(statsGroup(base,t=>t.rubro,t=>t.rubro),"Rubro"))}
+    ${sec("Tiempo por tipo de tarea",tbl(statsGroup(base,t=>t.tipo,t=>t.tipo),"Tipo"))}
+    ${sec("Tiempo por persona",tbl(statsGroup(base,t=>t.responsable,t=>t.responsable),"Persona"))}
+    ${sec("Comparativo por tarea similar",gruposArr.length===0
+      ?`<div class="card" style="text-align:center;color:#888;padding:1.5rem">Sin datos aún.</div>`
+      :`<div style="display:flex;flex-direction:column;gap:12px">${gruposArr.map(g=>{
+          const hrs=g.entradas.map(e=>e.horas);
+          const prom=hrs.reduce((a,b)=>a+b,0)/hrs.length;
+          const mn=Math.min(...hrs),mx=Math.max(...hrs);
+          return`<div class="card">
+            <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:10px">
+              <div><div style="font-weight:500;font-size:14px;margin-bottom:4px">${esc(g.titulo)}</div>
+              <div class="row" style="gap:5px">${g.rubro?badge(g.rubro,"#F1EFE8","#5F5E5A"):""}${g.obraId?badge(obraName(g.obraId),"#EEEDFE","#3C3489"):""}</div></div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                ${[["Promedio",prom.toFixed(1)+"h","#EAF3DE","#3B6D11"],["Mínimo",mn+"h","#E6F1FB","#185FA5"],["Máximo",mx+"h","#FAEEDA","#BA7517"]].map(([l,v,bg,tc])=>`<div style="text-align:center;background:${bg};border-radius:8px;padding:6px 12px"><div style="font-size:11px;color:${tc}">${l}</div><div style="font-size:16px;font-weight:500;color:${tc}">${v}</div></div>`).join("")}
+              </div>
+            </div>
+            <div class="row" style="gap:6px;flex-wrap:wrap">
+              ${g.entradas.map((e,j)=>`<span style="font-size:12px;padding:3px 10px;border-radius:6px;background:#f5f5f5;border:1px solid #eee">#${j+1}: ${e.horas}h <span style="color:#bbb">(${new Date(e.fecha).toLocaleDateString("es-PY")})</span></span>`).join("")}
+            </div>
+            ${hrs.length>1?`<div style="margin-top:10px"><div style="display:flex;gap:3px;height:10px;border-radius:4px;overflow:hidden">${hrs.map(h=>{const p=mx>mn?((h-mn)/(mx-mn))*100:50;return`<div style="flex:1;background:hsl(${120-p*1.2},55%,45%)" title="${h}h"></div>`}).join("")}</div><div style="display:flex;justify-content:space-between;font-size:11px;color:#bbb;margin-top:3px"><span>más rápido</span><span>más lento</span></div></div>`:""}
+          </div>`
+        }).join("")}</div>`
+    )}
+  </div>`
+}
+
+function render(){
+  const nav=(v,l)=>`<button onclick="state.vista='${v}';render()" style="background:${state.vista===v?"#185FA5":"#e8e8e8"};color:${state.vista===v?"#fff":"#333"};border:${state.vista===v?"none":"1px solid #ccc"}">${l}</button>`;
+  const vistas={tareas:renderTareas,obras:renderObras,rubros:renderRubros,analisis:renderAnalisis};
+  document.getElementById("app").innerHTML=`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:8px">
+      <div><h1>Gestor de tareas</h1><p style="font-size:13px;color:#888;margin-top:2px">Obra de construcción</p></div>
+      <div class="row" style="gap:8px">
+        ${syncBadge()}
+        <button onclick="loadData()" style="background:#e8e8e8;color:#333;border:1px solid #ccc;font-size:12px">↺ Actualizar</button>
+        ${btn("⬆ Exportar","exportarJSON()","#e8e8e8","#333","1px solid #ccc")}
+        ${btn("⬇ Importar","importarJSON()","#e8e8e8","#333","1px solid #ccc")}
+      </div>
+    </div>
+    ${state.toast?`<div style="position:fixed;bottom:24px;right:24px;background:#222;color:#fff;padding:10px 18px;border-radius:8px;font-size:13px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,.3)">${esc(state.toast)}</div>`:""}
+    <div class="row" style="margin-bottom:24px;margin-top:14px">
+      ${nav("tareas","Tareas")}${nav("obras","Obras")}${nav("rubros","Rubros")}${nav("analisis","Análisis de tiempos")}
+    </div>
+    ${(vistas[state.vista]||renderTareas)()}
+  `;
+}
+
+// ─── inicio ──────────────────────────────────────────────
+if(SCRIPT_URL==="PEGAR_URL_AQUI"){
+  document.getElementById("app").innerHTML=`<div style="background:#FAEEDA;border:1px solid #EF9F27;border-radius:10px;padding:1.5rem;color:#633806;max-width:600px;margin:2rem auto">
+    <div style="font-size:16px;font-weight:500;margin-bottom:8px">⚠ Falta configurar la URL del script</div>
+    <p style="font-size:13px;line-height:1.6">Abrí el archivo HTML en un editor de texto, buscá la línea que dice <code>PEGAR_URL_AQUI</code> y reemplazala con la URL de tu Apps Script. Seguí las instrucciones del paso a paso.</p>
+  </div>`;
+} else {
+  loadData();
+}
+</script>
+</body>
+</html>
