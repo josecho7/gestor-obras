@@ -42,7 +42,7 @@ tr:last-child td{border-bottom:none}
 // ══════════════════════════════════════════════════════════
 //  CONFIGURACIÓN — pegá aquí tu URL del Apps Script
 // ══════════════════════════════════════════════════════════
-const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxHK6jIILpvZY1TOduSRSNm_osSDl0Yg8Mz5isXbETQbQJc3Y7LIKSGkSZADoZIcfSQ/exec";
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxJTTPvRHh_jYO4Ba597wmE_QsYpPrPtWH6uiqpsMvjtGONnXUo6DP1sjg3f0cHQZY/exec";
 // ══════════════════════════════════════════════════════════
 
 const DEFAULT_RUBROS=["Hormigón","Mampostería","Eléctrica","Sanitaria","Combate","Climatización","Ventilación"];
@@ -72,25 +72,40 @@ function emptyForm(){return{titulo:"",descripcion:"",rubro:"",nivel:"",tipo:"Obr
 async function loadData(){
   state.syncStatus="loading";render();
   try{
-    const res=await fetch(SCRIPT_URL,{method:"GET",redirect:"follow"});
-    const json=await res.json();
-    if(json.ok){
-      state.tareas=json.data.tareas||[];
-      state.rubros=json.data.rubros||DEFAULT_RUBROS;
-      state.obras=json.data.obras||[];
-      state.syncStatus="ok";
-    } else { state.syncStatus="error"; }
-  } catch(e){ state.syncStatus="error"; }
-  render();
+    const res=await fetch(SCRIPT_URL+"?callback=cb",{method:"GET",mode:"no-cors",redirect:"follow"});
+    // no-cors no permite leer la respuesta, usamos jsonp
+    await loadViaJsonp();
+  } catch(e){ await loadViaJsonp(); }
+}
+
+function loadViaJsonp(){
+  return new Promise((resolve)=>{
+    const existing=document.getElementById("jsonp-script");
+    if(existing)existing.remove();
+    window._jsonpCallback=function(data){
+      if(data&&data.ok){
+        state.tareas=data.data.tareas||[];
+        state.rubros=data.data.rubros||DEFAULT_RUBROS;
+        state.obras=data.data.obras||[];
+        state.syncStatus="ok";
+      } else { state.syncStatus="error"; }
+      render();resolve();
+    };
+    const s=document.createElement("script");
+    s.id="jsonp-script";
+    s.src=SCRIPT_URL+"?callback=_jsonpCallback";
+    s.onerror=()=>{ state.syncStatus="error";render();resolve(); };
+    document.head.appendChild(s);
+  });
 }
 
 async function saveData(){
   state.syncStatus="saving";render();
   try{
     const body=JSON.stringify({tareas:state.tareas,rubros:state.rubros,obras:state.obras});
-    const res=await fetch(SCRIPT_URL,{method:"POST",body,redirect:"follow"});
-    const json=await res.json();
-    state.syncStatus=json.ok?"ok":"error";
+    await fetch(SCRIPT_URL,{method:"POST",mode:"no-cors",body,redirect:"follow"});
+    // con no-cors no podemos leer la respuesta, asumimos ok
+    state.syncStatus="ok";
   } catch(e){ state.syncStatus="error"; }
   render();
 }
